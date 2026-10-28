@@ -370,6 +370,17 @@ thresholds), in its terminal UI and headless.
 * Codex 0.163.0 edits with `apply_patch <<'PATCH'` and runs the tests in the same command; the
   guard counts those edits (`loopguard.shell_edits`).
 
+**OpenCode v2.2.0 — verified live, 2026-10-28** (`opencode` v2.2.0, Node v24.16.0):
+
+* OpenCode server plugin resolution: loads plugins through `package.json` `"exports"` (`"./server"`, `"./opencode"`) or direct paths in `opencode.json` (`"plugin": [...]`), exposing default `{ id: "tokeneconomizer", setup(ctx) }`.
+* Sub-agents run as child sessions in OpenCode's SQLite database (`~/.local/share/opencode/opencode.db`, table `session_v2` with `parent_id`). The plugin hooks `ctx.session.hook("context")` and pushes `{ type: "text", text: manual }` into `event.system` for both root and child sessions without duplicating across turns, giving sub-agents immediate repository micro-skills and repomap context.
+* Sub-agents are guarded by `TurnGuard` independently during their turn, so a looping sub-agent receives redirects without corrupting root session counters.
+* Session folding: child sessions (`parentID != null`) do not fold independently; when the root session ends or process exits, `trace/opencode.py` uses a recursive CTE (`WITH RECURSIVE children ...`) to aggregate all tool calls, token usage, and working directories across root and child sessions into one comprehensive fold.
+* Tool normalization: OpenCode v2 tools (`shell`, `read`, `edit`, `write`, `patch`, `glob`, `grep`, etc.) execute through `ctx.tool.hook("execute.after")`. Shell results carry structured `{ output, exit, signal, status }`, where non-zero `exit` marks `is_error = True`. Errors arrive as `status: "error"` with `event.error`. Both trigger loopguard inspection.
+* UI Notices in TUI and OpenChamber: `ctx.session.synthetic({ sessionID, text, description: text, resume: false })` posts non-intrusive timeline notices visible to the user without triggering unneeded model turns.
+* Slash command `/te`: registered in `ctx.command.transform` and intercepted in `session:prompt` to run `te --host opencode --cwd <cwd> ...` and display status, micro-skills, or config directly in chat.
+* `TE_SIDECALL=1` prevents recursive invocation when running plugin side calls (`opencode run`).
+
 **Prompt caching, 2026-10-21.** A prompt cache matches a request's prefix: the tools, the
 system prompt, then the conversation in order. What the plugin changes must leave a cached
 prefix alone. Checked on Claude Code 2.1.307 against a local fake Messages API (no model calls),

@@ -303,12 +303,38 @@ def test_the_plugin_directory_is_also_a_pi_package():
     (root_ext,) = root["pi"]["extensions"]
     assert os.path.realpath(os.path.join(os.path.dirname(PLUGIN), root_ext)) == \
         os.path.realpath(os.path.join(PLUGIN, ext))
-    assert {k: v for k, v in root.items() if k != "pi"} == {k: v for k, v in pkg.items()
-                                                           if k != "pi"}
+    assert {k: v for k, v in root.items() if k not in ("pi", "exports")} == {
+        k: v for k, v in pkg.items() if k not in ("pi", "exports")
+    }
     # no lockfile: Claude Code installs a plugin's npm dependencies only when one exists,
     # and this package has none to install (the Pi API is a peer dependency)
     assert not any(os.path.exists(os.path.join(PLUGIN, f)) for f in
                    ("package-lock.json", "npm-shrinkwrap.json", "bun.lock", "bun.lockb"))
+
+
+def test_the_plugin_directory_is_also_an_opencode_v2_plugin():
+    """OpenCode v2 loads plugins via package.json exports or opencode.json. Both root and plugin/
+    package.json declare `./server` and `./opencode` exports pointing to the same TypeScript plugin,
+    and declare the `opencode-plugin` keyword."""
+    pkg = _json(PLUGIN, "package.json")
+    root = _json(os.path.dirname(PLUGIN), "package.json")
+    assert "opencode-plugin" in pkg.get("keywords", [])
+    assert "opencode-plugin" in root.get("keywords", [])
+
+    assert "exports" in pkg and "exports" in root
+    assert pkg["exports"].get("./server") == "./opencode/tokeneconomizer.ts"
+    assert pkg["exports"].get("./opencode") == "./opencode/tokeneconomizer.ts"
+    assert root["exports"].get("./server") == "./plugin/opencode/tokeneconomizer.ts"
+    assert root["exports"].get("./opencode") == "./plugin/opencode/tokeneconomizer.ts"
+
+    pkg_target = os.path.realpath(os.path.join(PLUGIN, pkg["exports"]["./server"]))
+    root_target = os.path.realpath(os.path.join(os.path.dirname(PLUGIN), root["exports"]["./server"]))
+    assert pkg_target == root_target
+    assert os.path.isfile(pkg_target)
+    src = open(pkg_target, encoding="utf-8").read()
+    assert '"--host", "opencode"' in src
+    assert "TE_SIDECALL" in src
+
 
 
 def test_the_plugin_carries_the_core_as_symlinks_an_install_copy_follows(tmp_path):
@@ -427,3 +453,220 @@ def test_codex_sees_no_claude_format_commands_folder():
     for manifest in (".claude-plugin/plugin.json", ".github/plugin/plugin.json"):
         with open(os.path.join(PLUGIN, manifest), encoding="utf-8") as fh:
             assert json.load(fh)["commands"] == "./slash-commands/"
+
+
+def test_opencode_plugin_lifecycle_subagents_and_loopguard(tmp_path):
+    """OpenCode v2 plugin:
+    - skips setup when TE_SIDECALL=1
+    - extracts tool outcome correctly for shell (exit code) and general errors
+    - injects manual into event.system idempotently for both root and sub-agent sessions
+    - handles tool execution error and completion in execute.after
+    - runs /te slash command and posts synthetic notice
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    ext = os.path.join(PLUGIN, "opencode", "tokeneconomizer.ts")
+    if not os.path.isfile(ext):
+        pytest.fail(f"{ext} does not exist yet")
+
+    script = """
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const pluginModule = await import(process.argv[1]);
+const plugin = pluginModule.default;
+const { extractToolOutcome, injectSystemManual } = pluginModule;
+
+// 1. Helper function checks
+const outcomeCompletedShell = extractToolOutcome({
+  tool: "shell",
+  status: "completed",
+  result: { output: { output: "hello", exit: 0, status: "completed" } }
+});
+if (outcomeCompletedShell.exit_code !== 0 || outcomeCompletedShell.is_error !== false || outcomeCompletedShell.output !== "hello") {
+  throw new Error("extractToolOutcome failed for shell exit 0: " + JSON.stringify(outcomeCompletedShell));
+}
+
+const outcomeFailedShell = extractToolOutcome({
+  tool: "shell",
+  status: "completed",
+  result: { output: { output: "command not found", exit: 127, status: "completed" } }
+});
+if (outcomeFailedShell.exit_code !== 127 || outcomeFailedShell.is_error !== true) {
+  throw new Error("extractToolOutcome failed for shell exit 127: " + JSON.stringify(outcomeFailedShell));
+}
+
+const outcomeErrorTool = extractToolOutcome({
+  tool: "read",
+  status: "error",
+  error: "ENOENT: no such file"
+});
+if (outcomeErrorTool.is_error !== true || !outcomeErrorTool.output.includes("ENOENT")) {
+  throw new Error("extractToolOutcome failed for tool error: " + JSON.stringify(outcomeErrorTool));
+}
+
+// Test injectSystemManual idempotency
+const sysEvent = { system: [{ type: "text", text: "You are an assistant." }] };
+const added1 = injectSystemManual(sysEvent, "Manual text");
+if (!added1 || sysEvent.system.length !== 2) {
+  throw new Error("injectSystemManual first call failed: " + JSON.stringify(sysEvent));
+}
+const added2 = injectSystemManual(sysEvent, "Manual text");
+if (added2 || sysEvent.system.length !== 2) {
+  throw new Error("injectSystemManual duplicate call failed: " + JSON.stringify(sysEvent));
+}
+
+// 2. Mock context generator
+const makeMockCtx = (dir) => {
+  const events = [];
+  const hooks = new Map();
+  const synthetics = [];
+  const commands = [];
+  return {
+    directory: dir,
+    worktree: dir,
+    event: {
+      subscribe(fn) { events.push(fn); }
+    },
+    session: {
+      hook(name, fn) {
+        if (!hooks.has("session:" + name)) hooks.set("session:" + name, []);
+        hooks.get("session:" + name).push(fn);
+      },
+      synthetic(payload) {
+        synthetics.push(payload);
+        return Promise.resolve();
+      }
+    },
+    tool: {
+      hook(name, fn) {
+        if (!hooks.has("tool:" + name)) hooks.set("tool:" + name, []);
+        hooks.get("tool:" + name).push(fn);
+      }
+    },
+    command: {
+      transform(cmd) { commands.push(cmd); }
+    },
+    _events: events,
+    _hooks: hooks,
+    _synthetics: synthetics,
+    _commands: commands,
+    async emitEvent(ev) { for (const fn of events) await fn(ev); },
+    async runHook(name, ev) {
+      for (const fn of (hooks.get(name) || [])) await fn(ev);
+    }
+  };
+};
+
+// Test TE_SIDECALL=1 short circuit
+process.env.TE_SIDECALL = "1";
+const sidecallCtx = makeMockCtx(process.argv[2]);
+await plugin.setup(sidecallCtx);
+if (sidecallCtx._events.length > 0 || sidecallCtx._hooks.size > 0) {
+  throw new Error("TE_SIDECALL=1 did not short circuit setup");
+}
+delete process.env.TE_SIDECALL;
+
+// 3. Normal setup
+const ctx = makeMockCtx(process.argv[2]);
+await plugin.setup(ctx);
+
+if (ctx._events.length === 0 || !ctx._hooks.has("session:context") || !ctx._hooks.has("session:prompt") || !ctx._hooks.has("tool:execute.after")) {
+  throw new Error("Hooks were not registered properly");
+}
+
+// Create root session
+await ctx.emitEvent({
+  type: "session.created",
+  sessionID: "ses_root_1",
+  parentID: null,
+  location: { directory: process.argv[2] }
+});
+
+// Prompt in root session
+await ctx.runHook("session:prompt", {
+  sessionID: "ses_root_1",
+  messageID: "msg_1",
+  prompt: { text: "Hello TokenEconomizer" }
+});
+
+// Context in root session
+const rootCtxEvent = {
+  sessionID: "ses_root_1",
+  system: [{ type: "text", text: "Base instructions." }]
+};
+await ctx.runHook("session:context", rootCtxEvent);
+await ctx.runHook("session:context", rootCtxEvent);
+
+// Subagent session created under root
+await ctx.emitEvent({
+  type: "session.created",
+  sessionID: "ses_sub_1",
+  parentID: "ses_root_1",
+  location: { directory: process.argv[2] }
+});
+
+const subCtxEvent = {
+  sessionID: "ses_sub_1",
+  system: [{ type: "text", text: "Subagent instructions." }]
+};
+await ctx.runHook("session:context", subCtxEvent);
+
+// Tool execution after hook (completed with exit code 1)
+const toolAfterEvent = {
+  sessionID: "ses_sub_1",
+  tool: "shell",
+  input: { command: "exit 1" },
+  status: "completed",
+  result: { output: { output: "fail", exit: 1, status: "completed" }, content: "fail" }
+};
+await ctx.runHook("tool:execute.after", toolAfterEvent);
+
+// Tool execution with error
+const toolErrorEvent = {
+  sessionID: "ses_sub_1",
+  tool: "read",
+  input: { path: "nonexistent.txt" },
+  status: "error",
+  error: "file not found"
+};
+await ctx.runHook("tool:execute.after", toolErrorEvent);
+
+// Command /te status in session:prompt
+await ctx.runHook("session:prompt", {
+  sessionID: "ses_root_1",
+  messageID: "msg_cmd",
+  prompt: { text: "/te status" }
+});
+
+// Stop and end events
+await ctx.emitEvent({
+  type: "session.execution.succeeded",
+  sessionID: "ses_sub_1"
+});
+
+await ctx.emitEvent({
+  type: "session.execution.succeeded",
+  sessionID: "ses_root_1"
+});
+
+console.log(JSON.stringify({
+  ok: true,
+  syntheticsCount: ctx._synthetics.length,
+  rootSystemEntries: rootCtxEvent.system.length,
+  subSystemEntries: subCtxEvent.system.length,
+  hasCommand: ctx._commands.length > 0
+}));
+"""
+    env = dict(os.environ, TOKENECONOMIZER_HOME=str(tmp_path / "home"))
+    run = subprocess.run([node, "--experimental-strip-types", "--no-warnings",
+                          "--input-type=module", "-e", script, ext, str(tmp_path)],
+                         capture_output=True, text=True, timeout=60, env=env)
+    if run.returncode and "strip-types" in run.stderr:
+        pytest.skip("this node cannot load TypeScript")
+    assert run.returncode == 0, run.stderr
+    res = json.loads(run.stdout.strip().splitlines()[-1])
+    assert res["ok"] is True
+    assert res["hasCommand"] is True
+

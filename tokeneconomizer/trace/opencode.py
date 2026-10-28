@@ -24,17 +24,23 @@ def _resolve_session_source(path: str) -> Tuple[Optional[str], Optional[str], Op
                 return db_p, sid, None, None
         return None, None, None, None
 
-    if path.endswith(".json"):
+    if path.endswith((".json", ".jsonl")):
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                data = json.load(fh)
-            if isinstance(data, dict):
-                if "session_id" in data and ("db_path" in data or os.path.exists(_default_opencode_db())):
-                    db = data.get("db_path") or _default_opencode_db()
-                    return db, data.get("session_id"), data.get("cwd"), None
-                if "messages" in data and "info" in data:
-                    info = data.get("info") or {}
-                    return None, info.get("id"), info.get("directory"), data
+                content = fh.read().strip()
+            if content.startswith("{"):
+                try:
+                    data = json.loads(content)
+                except ValueError:
+                    # Could be first line of JSONL
+                    data = json.loads(content.splitlines()[0])
+                if isinstance(data, dict):
+                    if "session_id" in data and ("db_path" in data or os.path.exists(_default_opencode_db())):
+                        db = data.get("db_path") or _default_opencode_db()
+                        return db, data.get("session_id"), data.get("cwd"), None
+                    if "messages" in data and "info" in data:
+                        info = data.get("info") or {}
+                        return None, info.get("id"), info.get("directory"), data
         except (OSError, ValueError):
             return None, None, None, None
 

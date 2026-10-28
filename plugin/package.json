@@ -2,15 +2,20 @@
   "name": "tokeneconomizer",
   "version": "0.1.0",
   "private": true,
-  "description": "TokenEconomizer for Pi: micro-skills (short repository facts learned from earlier sessions) injected at session start, and a guard that redirects a turn stuck in a failing loop.",
+  "description": "TokenEconomizer for Pi and OpenCode: micro-skills (short repository facts learned from earlier sessions) injected at session start, and a guard that redirects a turn stuck in a failing loop.",
   "keywords": [
     "pi-package",
+    "opencode-plugin",
     "cost",
     "tokens",
     "context"
   ],
   "license": "Apache-2.0",
   "repository": "https://github.com/microsoft/TokenEconomizer",
+  "exports": {
+    "./server": "./opencode/tokeneconomizer.ts",
+    "./opencode": "./opencode/tokeneconomizer.ts"
+  },
   "pi": {
     "extensions": [
       "./pi/tokeneconomizer.ts"
