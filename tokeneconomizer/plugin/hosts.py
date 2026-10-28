@@ -348,6 +348,99 @@ class Pi(Host):
         return trace.pi_session_usage(transcript_path)
 
 
+class OpenCode(Host):
+    """The OpenCode v2 server plugin, through `plugin/opencode/tokeneconomizer.ts`."""
+    name = "opencode"
+    command_hint = "/te"
+    interrupt = "Press Esc to interrupt the turn, or run `/te config set loopguard=off`."
+    end_run = "Stop the process (Ctrl-C) or run `te config set loopguard=off`."
+    prompt_context = True
+    keeps_start_context = True
+
+    TOOL_MAP = {
+        "shell": "bash",
+        "bash": "bash",
+        "read": "read",
+        "edit": "edit",
+        "write": "edit",
+        "patch": "edit",
+        "multiedit": "edit",
+        "glob": "search",
+        "grep": "search",
+        "list": "search",
+    }
+
+    def headless(self, env, transcript=None):
+        return env.get("TE_OPENCODE_MODE") == "run"
+
+    def env_session_id(self, env):
+        return env.get("OPENCODE_SESSION_ID") or None
+
+    def turn_key(self, p):
+        return str(p.get("prompt_id") or p.get("message_id") or p.get("messageID") or p.get("turn_id") or "")
+
+    def is_subagent(self, payload):
+        return bool((payload or {}).get("is_subagent"))
+
+    def resolve_transcript(self, payload):
+        if (payload or {}).get("transcript_path"):
+            return payload["transcript_path"]
+        sid = self.session_id(payload)
+        if not sid:
+            return ""
+        from .paths import state_root
+        s_dir = os.path.join(state_root(), "sessions", "opencode-logs")
+        os.makedirs(s_dir, exist_ok=True)
+        pointer_path = os.path.join(s_dir, f"{sid}.json")
+        xdg_data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        default_db = os.path.join(xdg_data, "opencode", "opencode.db")
+        data = {
+            "session_id": sid,
+            "parent_id": (payload or {}).get("parent_id"),
+            "cwd": (payload or {}).get("cwd") or os.getcwd(),
+            "db_path": (payload or {}).get("db_path") or default_db,
+            "updated": time.time(),
+        }
+        with open(pointer_path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        return pointer_path
+
+    def tool_call(self, p):
+        args = p.get("tool_input") if isinstance(p.get("tool_input"), dict) else {}
+        resp = p.get("tool_response")
+        text = response_text(resp)
+        code = resp.get("exit_code") if isinstance(resp, dict) and resp.get("exit_code") is not None else _exit_code(resp)
+        return str(p.get("tool_name") or ""), args, text, code
+
+    def turn_event(self, tool_name, tool_input, result_text, exit_code, payload=None):
+        canonical = self.TOOL_MAP.get(tool_name.lower(), tool_name)
+        status = "completed"
+        resp = ((payload or {}).get("tool_response") if isinstance(payload, dict) else None)
+        is_error = False
+        if isinstance(resp, dict):
+            is_error = bool(resp.get("is_error") or resp.get("isError"))
+        if exit_code is not None and exit_code != 0:
+            is_error = True
+        if is_error:
+            status = "error"
+        inp = dict(tool_input) if isinstance(tool_input, dict) else {}
+        if "filePath" in inp and "file_path" not in inp:
+            inp["file_path"] = inp["filePath"]
+        return {"tool": canonical, "input": inp, "output": result_text,
+                "exit_code": exit_code, "status": status}
+
+    def mechanism_trace(self, transcript_path, workdir):
+        out = os.path.join(workdir, "opencode_trace.jsonl")
+        n = trace.opencode_session_to_claude(transcript_path, out)
+        return out if n is not None else None
+
+    def prompt_count(self, transcript_path):
+        return trace.opencode_prompt_count(transcript_path)
+
+    def session_usage(self, transcript_path):
+        return trace.opencode_session_usage(transcript_path)
+
+
 def copilot_home(env=None):
     env = os.environ if env is None else env
     return env.get("COPILOT_HOME") or os.path.join(os.path.expanduser("~"), ".copilot")
@@ -437,7 +530,7 @@ def _ancestor_args(limit=4):
     return out
 
 
-HOSTS = {"claude": ClaudeCode, "codex": Codex, "copilot": Copilot, "pi": Pi}
+HOSTS = {"claude": ClaudeCode, "codex": Codex, "copilot": Copilot, "opencode": OpenCode, "pi": Pi}
 
 
 def default_host(env=None, recent=None):
@@ -448,6 +541,8 @@ def default_host(env=None, recent=None):
     env = os.environ if env is None else env
     if env.get("TE_HOST") in HOSTS:
         return env["TE_HOST"]
+    if env.get("OPENCODE") == "1" or env.get("OPENCODE_SESSION_ID"):
+        return "opencode"
     if env.get("CLAUDECODE") == "1":
         return "claude"
     if env.get("COPILOT_CLI") == "1":

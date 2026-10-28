@@ -460,6 +460,26 @@ def test_the_pi_host_reads_what_the_extension_sends():
     assert hosts.detect({"turn_id": "t"}, hint="pi").name == "pi"
 
 
+def test_the_opencode_host_reads_what_the_plugin_sends(tmp_path, monkeypatch):
+    h = hosts.HOSTS["opencode"]()
+    assert hosts.default_host({"OPENCODE": "1"}, recent="claude") == "opencode"
+    assert hosts.default_host({"OPENCODE_SESSION_ID": "ses_1"}) == "opencode"
+    assert h.env_session_id({"OPENCODE_SESSION_ID": "ses_1"}) == "ses_1"
+    name, args, text, code = h.tool_call({
+        "tool_name": "shell",
+        "tool_input": {"command": "pytest -q", "workdir": "/w/repo"},
+        "tool_response": {"output": "FAILED test_a.py", "exit_code": 1, "is_error": True},
+    })
+    assert (name, args["command"], code) == ("shell", "pytest -q", 1) and "FAILED" in text
+    ev = h.turn_event("shell", {"command": "pytest -q"}, text, code)
+    assert ev["tool"] == "bash" and ev["exit_code"] == 1
+    ev_err = h.turn_event("read", {"filePath": "/w/missing.py"}, "ENOENT", None,
+                          {"tool_response": {"output": "ENOENT", "is_error": True}})
+    assert ev_err["tool"] == "read" and ev_err["status"] == "error"
+    assert h.headless({"TE_OPENCODE_MODE": "run"}) and not h.headless({})
+    assert hosts.detect({"session_id": "ses_1"}, hint="opencode").name == "opencode"
+
+
 # ---- the guard sees edits made through the shell ---------------------------------------------
 from tokeneconomizer import loopguard as guard  # noqa: E402
 from tokeneconomizer.loopguard import turn  # noqa: E402

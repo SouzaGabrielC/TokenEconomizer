@@ -53,6 +53,11 @@ COPILOT_PROTECTED = frozenset({
     "read_agent", "list_agents", "write_agent", "ask_user", "web_fetch", "web_search",
     "report_intent", "update_todo", "sql",
 })
+OPENCODE_PROTECTED = frozenset({
+    "shell", "bash", "read", "edit", "write", "patch", "multiedit",
+    "glob", "grep", "list", "question", "skill", "subagent", "todo",
+    "webfetch", "websearch",
+})
 # Rarely used, but expensive to lose when a task needs them: proposed only after
 # HIGH_RISK_FACTOR times the usual evidence.
 HIGH_RISK = frozenset({"NotebookEdit"})
@@ -126,7 +131,9 @@ class LiveAdapter:
 
     # ---- tool pruning ----
     def protected_tools(self):
-        extra = COPILOT_PROTECTED if self.host.name == "copilot" else frozenset()
+        extra = COPILOT_PROTECTED if self.host.name == "copilot" else (
+            OPENCODE_PROTECTED if self.host.name == "opencode" else frozenset()
+        )
         return PROTECTED_TOOLS | INTERACTIVE_PROTECTED | extra
 
     def inapplicable_tools(self):

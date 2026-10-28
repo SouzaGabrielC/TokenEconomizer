@@ -117,16 +117,18 @@ def test_clones_and_worktrees_share_one_key_whatever_their_folder_names(tmp_path
 def _payloads(host, sid, cwd, n):
     base = {"session_id": sid, "cwd": cwd}
     turn = {"claude": {"prompt_id": f"p{n}"}, "codex": {"turn_id": f"t{n}"},
-            "pi": {"prompt_id": f"{sid}:{n}"}, "copilot": {}}[host]
+            "pi": {"prompt_id": f"{sid}:{n}"}, "copilot": {}, "opencode": {"prompt_id": f"p{n}"}}[host]
     result = ({"tool_result": {"text_result_for_llm": "ok"}} if host == "copilot"
-              else {"tool_response": {"stdout": "ok"}})
+              else ({"tool_response": {"output": "ok"}} if host == "opencode"
+                    else {"tool_response": {"stdout": "ok"}}))
     return [dict(base, **turn, hook_event_name="UserPromptSubmit", prompt="go"),
-            dict(base, **turn, **result, hook_event_name="PostToolUse", tool_name="Bash",
+            dict(base, **turn, **result, hook_event_name="PostToolUse",
+                 tool_name="shell" if host == "opencode" else "Bash",
                  tool_input={"command": "ls"}),
             dict(base, **turn, hook_event_name="Stop", stop_hook_active=False)]
 
 
-@pytest.mark.parametrize("host", ["claude", "codex", "copilot", "pi"])
+@pytest.mark.parametrize("host", ["claude", "codex", "copilot", "pi", "opencode"])
 def test_a_session_that_moves_into_another_repository_stays_with_its_own(tmp_path, env, host):
     """Claude Code's hook `cwd` follows the agent's `cd`; every agent's hooks name a cwd. The
     first hook pins the session, and nothing is recorded under the repository it moved to."""
@@ -428,8 +430,33 @@ def test_a_session_start_says_once_what_carrying_state_over_moved(tmp_path, env)
 from tests.test_live_core import copilot_events  # noqa: E402
 from tests.test_live_hooks import COPILOT_TRAP, pi_trap_session  # noqa: E402
 
-AGENTS = ["claude", "codex", "copilot", "pi"]
+AGENTS = ["claude", "codex", "copilot", "pi", "opencode"]
 FACT = "`python -m pytest …` works."
+
+
+def opencode_trap(path, cwd, i):
+    data = {
+        "cwd": cwd,
+        "info": {"id": f"ses_{i}", "directory": cwd, "cwd": cwd},
+        "messages": [
+            {"info": {"role": "user"}, "parts": [{"type": "text", "text": f"fix bug {i}"}]},
+            {"info": {"role": "assistant", "model": "claude-haiku-5-5",
+                      "tokens": {"input": 10, "output": 50, "cache": {"read": 1000, "write": 100}}},
+             "parts": [
+                 {"type": "tool", "callID": f"t{i}1", "tool": "edit",
+                  "state": {"status": "completed", "input": {"filePath": f"{cwd}/pkg/mod{i}.py"}}},
+                 {"type": "tool", "callID": f"t{i}2", "tool": "shell",
+                  "state": {"status": "completed", "input": {"command": "pytest -q tests/test_a.py"},
+                            "metadata": {"exit": 127}, "output": "pytest: command not found"}},
+                 {"type": "tool", "callID": f"t{i}3", "tool": "shell",
+                  "state": {"status": "completed", "input": {"command": "python -m pytest -q tests/test_a.py"},
+                            "metadata": {"exit": 0}, "output": "1 passed in 0.1s"}},
+             ]}
+        ]
+    }
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+    return path
 
 
 def claude_trap(path, cwd, i):
@@ -489,7 +516,8 @@ def agent_session(env, host, sid, cwd, i, tmp_path, monkeypatch, end=True):
         copilot_events(str(home / "session-state" / sid / "events.jsonl"), COPILOT_TRAP,
                        cwd=cwd, sid=sid)
     else:
-        make = {"claude": claude_trap, "codex": codex_trap, "pi": pi_trap_session}[host]
+        make = {"claude": claude_trap, "codex": codex_trap, "pi": pi_trap_session,
+                "opencode": opencode_trap}[host]
         base["transcript_path"] = make(str(tmp_path / f"rollout-{host}-{sid}.jsonl"), cwd, i)
     start = call(env, dict(base, hook_event_name="SessionStart", source="startup"), host)
     if end:

@@ -322,6 +322,11 @@ def _stuck(host, n=40):
                 if k % 2 == 0 else ("bash", {"command": "pytest -q"},
                                     {"content": fail, "isError": True, "exit_code": 1})
                 for k in range(n)]
+    if host == "opencode":
+        return [("edit", {"filePath": "/r/pkg/a.py"}, {"output": "ok"})
+                if k % 2 == 0 else ("shell", {"command": "pytest -q"},
+                                    {"output": fail, "exit_code": 1, "is_error": True})
+                for k in range(n)]
     return [("Edit", {"path": "/r/pkg/a.py"}, {"result_type": "success",
                                                 "text_result_for_llm": "ok"})
             if k % 2 == 0 else ("Bash", {"command": "pytest -q"}, {
@@ -330,7 +335,7 @@ def _stuck(host, n=40):
             for k in range(n)]
 
 
-@pytest.mark.parametrize("host", ["claude", "codex", "copilot", "pi"])
+@pytest.mark.parametrize("host", ["claude", "codex", "copilot", "pi", "opencode"])
 @pytest.mark.parametrize("mode", ["interactive", "headless"])
 @pytest.mark.parametrize("setting", ["nudge", "stop"])
 def test_the_guard_redirects_then_tells_the_person_how_to_stop_on_every_agent(
