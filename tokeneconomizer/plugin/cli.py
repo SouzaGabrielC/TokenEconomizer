@@ -31,7 +31,7 @@
 
 `te facts` and `te untool` are the earlier names of `microskills` and `toolprune`, and still work.
 `--cwd` picks the repository (default: the current directory) and `--host` the agent
-(claude | codex | copilot | pi; default: `TE_HOST`, else the agent whose shell runs `te`, else
+(claude | codex | copilot | opencode | pi; default: `TE_HOST`, else the agent whose shell runs `te`, else
 claude).
 """
 import argparse
@@ -625,8 +625,8 @@ def cmd_doctor(args):
         ok = False
     import shutil as _sh
     # Only the agents installed here: a Codex-only machine has no Claude Code catalog to probe.
-    agents = [h for h in ("claude", "codex", "copilot", "pi") if _sh.which(h)]
-    print(f"agents      {', '.join(agents) or 'none of claude, codex, copilot, pi on PATH'}")
+    agents = [h for h in ("claude", "codex", "copilot", "opencode", "pi") if _sh.which(h)]
+    print(f"agents      {', '.join(agents) or 'none of claude, codex, copilot, opencode, pi on PATH'}")
     for h in agents:
         pause = sidecall.paused(h, root)
         if pause:
@@ -660,6 +660,16 @@ def cmd_doctor(args):
         if ctrust is not None:
             print(f"copilot     this folder is {'trusted' if ctrust else 'NOT trusted'} (an "
                   f"untrusted folder's .github/copilot settings are ignored)")
+    if "opencode" in agents:
+        cfg_path = os.environ.get("OPENCODE_CONFIG") or os.path.expanduser("~/.config/opencode/opencode.json")
+        try:
+            with open(cfg_path, encoding="utf-8") as fh:
+                oc_cfg = json.load(fh)
+            plugins = oc_cfg.get("plugin") or []
+            installed = any("tokeneconomizer" in str(p) for p in plugins)
+            print(f"opencode    plugin {'configured in ' + cfg_path if installed else 'not in ' + cfg_path}")
+        except (OSError, ValueError):
+            print(f"opencode    config {cfg_path} not found")
     if "pi" in agents:
         settings = os.path.join(os.environ.get("PI_CODING_AGENT_DIR") or os.path.join(
             os.path.expanduser("~"), ".pi", "agent"), "settings.json")

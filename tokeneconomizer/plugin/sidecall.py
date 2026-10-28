@@ -52,7 +52,7 @@ def _env():
 
 # What a CLI says when it is not signed in -- Copilot's "To authenticate, ... run the '/login'
 # command" under BYOK, Claude Code's "Please run /login".
-_SIGNED_OUT_RE = re.compile(r"To authenticate|/login\b|\b[Nn]ot (?:logged|signed) in")
+_SIGNED_OUT_RE = re.compile(r"To authenticate|/login\b|\b[Nn]ot (?:logged|signed) in|\bauthentication required\b")
 
 
 def _no_reply(host, out):
@@ -267,11 +267,31 @@ def copilot_call(prompt, model="", cli="copilot", timeout=TIMEOUT_S):
     return text, eff
 
 
+def opencode_call(prompt, model=None, cli="opencode", timeout=TIMEOUT_S, cwd=None):
+    cmd = [cli, "run", "--format", "json"]
+    if model:
+        cmd += ["--model", model]
+    cmd += ["--", prompt]
+    with tempfile.TemporaryDirectory(prefix="te-side-") as tmp:
+        run_cwd = cwd or tmp
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                             env=_env(), cwd=run_cwd, stdin=subprocess.DEVNULL)
+    text, usage = trace.opencode_json_reply(out.stdout or "")
+    if not text:
+        _no_reply("opencode", out)
+    eff = None
+    if usage:
+        eff, _ = accounting.effective(usage)
+    return text, eff
+
+
 def runner_for(host_name, config):
     """The optimizer callable for this host. Each host's calls go through that host's own CLI,
     never another agent's. The caller decides whether a call is allowed: micro-skills' proposer
     when micro-skills is on, the loop guard's judge when the guard is."""
     model = config.paid_model
+    if host_name == "opencode":
+        return lambda prompt, _m="agent": opencode_call(prompt, model=model)
     if host_name == "pi":
         return lambda prompt, _m="agent": pi_call(prompt, model=model)
     if host_name == "codex":

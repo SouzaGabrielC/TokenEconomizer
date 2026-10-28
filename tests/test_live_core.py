@@ -733,6 +733,7 @@ def test_a_copilot_side_call_is_a_bare_completion_priced_from_its_own_log(tmp_pa
     assert sidecall.runner_for("copilot", cfg).__code__.co_names.count("copilot_call") == 1
     assert sidecall.runner_for("claude", cfg).__code__.co_names.count("claude_call") == 1
     assert sidecall.runner_for("pi", cfg).__code__.co_names.count("pi_call") == 1
+    assert sidecall.runner_for("opencode", cfg).__code__.co_names.count("opencode_call") == 1
 
 
 @pytest.mark.real_sidecalls
@@ -830,6 +831,35 @@ def test_a_pi_side_call_is_a_bare_run_on_the_persons_own_pi(monkeypatch):
     calls.clear()
     sidecall.pi_call("propose facts", model="openrouter/anthropic/claude-haiku-4.5")
     assert calls[-1][0][-4:-2] == ["--model", "openrouter/anthropic/claude-haiku-4.5"]
+
+
+@pytest.mark.real_sidecalls
+def test_an_opencode_side_call_runs_with_te_sidecall_guard(monkeypatch):
+    import subprocess
+    from tokeneconomizer.plugin import sidecall
+    calls = []
+    events = [
+        {"type": "text", "part": {"type": "text", "text": "- use python -m pytest"}},
+        {"type": "step_finish", "part": {
+            "reason": "stop", "cost": 0.001, "modelID": "claude-haiku-4-5",
+            "tokens": {"input": 300, "output": 20, "reasoning": 0,
+                       "cache": {"read": 0, "write": 0}}}},
+    ]
+
+    def fake_run(cmd, **kw):
+        calls.append((cmd, kw))
+        return subprocess.CompletedProcess(cmd, 0, stdout="\n".join(json.dumps(e) for e in events), stderr="")
+
+    monkeypatch.setattr(sidecall.subprocess, "run", fake_run)
+    text, eff = sidecall.opencode_call("propose facts")
+    assert text == "- use python -m pytest" and eff and eff > 0
+    cmd, kw = calls[0]
+    assert cmd[:3] == ["opencode", "run", "--format"] and cmd[3] == "json"
+    assert cmd[-2:] == ["--", "propose facts"]
+    assert kw["env"]["TE_SIDECALL"] == "1" and kw["stdin"] is subprocess.DEVNULL
+    calls.clear()
+    sidecall.opencode_call("propose facts", model="anthropic/claude-haiku-4-5")
+    assert "--model" in calls[0][0] and "anthropic/claude-haiku-4-5" in calls[0][0]
 
 
 def test_a_copilot_notice_is_a_progress_line_before_the_hook_output():

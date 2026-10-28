@@ -1039,10 +1039,15 @@ def test_only_a_signed_out_answer_pauses_the_model_calls(env, monkeypatch):
     monkeypatch.setenv("TOKENECONOMIZER_HOME", env["TOKENECONOMIZER_HOME"])
     sidecall._no_reply("pi", subprocess.CompletedProcess([], 1, "", "429 rate limited"))
     assert sidecall.paused("pi") is None
+    sidecall._no_reply("opencode", subprocess.CompletedProcess([], 1, "", "429 rate limited"))
+    assert sidecall.paused("opencode") is None
     sidecall._no_reply("claude", subprocess.CompletedProcess([], 1, "Invalid API key · Please "
                                                                     "run /login", ""))
     assert sidecall.paused("claude") and sidecall.paused("pi") is None
     assert sidecall.resume("claude") and sidecall.paused("claude") is None
+    sidecall._no_reply("opencode", subprocess.CompletedProcess([], 1, "Error: authentication required", ""))
+    assert sidecall.paused("opencode")
+    assert sidecall.resume("opencode") and sidecall.paused("opencode") is None
 
 
 def test_a_failed_copilot_tool_reaches_the_guard(env, repo, tmp_path, monkeypatch):
