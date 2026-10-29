@@ -847,24 +847,34 @@ def test_an_opencode_side_call_runs_with_te_sidecall_guard(monkeypatch):
     from tokeneconomizer.plugin import sidecall
     calls = []
     events = [
+        {"type": "step_start", "sessionID": "ses_side_1"},
         {"type": "text", "part": {"type": "text", "text": "- use python -m pytest"}},
         {"type": "step_finish", "part": {
             "reason": "stop", "cost": 0.001, "modelID": "claude-haiku-4-5",
             "tokens": {"input": 300, "output": 20, "reasoning": 0,
                        "cache": {"read": 0, "write": 0}}}},
     ]
+    sidecall._OC_FLAGS.clear()
 
     def fake_run(cmd, **kw):
         calls.append((cmd, kw))
+        if "--help" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="opencode run [--standalone] [--format json]", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="\n".join(json.dumps(e) for e in events), stderr="")
 
     monkeypatch.setattr(sidecall.subprocess, "run", fake_run)
     text, eff = sidecall.opencode_call("propose facts")
     assert text == "- use python -m pytest" and eff and eff > 0
-    cmd, kw = calls[0]
-    assert cmd[:3] == ["opencode", "run", "--format"] and cmd[3] == "json"
-    assert cmd[-2:] == ["--", "propose facts"]
+    # 0: run --help, 1: opencode run ..., 2: opencode session delete ses_side_1
+    run_cmd, kw = calls[1]
+    assert run_cmd[:3] == ["opencode", "run", "--standalone"]
+    assert "--format" in run_cmd and "json" in run_cmd
+    assert run_cmd[-2:] == ["--", "propose facts"]
     assert kw["env"]["TE_SIDECALL"] == "1" and kw["stdin"] is subprocess.DEVNULL
+    cfg_content = json.loads(kw["env"]["OPENCODE_CONFIG_CONTENT"])
+    assert cfg_content["permission"]["bash"] == "deny" and cfg_content["permission"]["shell"] == "deny"
+    del_cmd, _ = calls[2]
+    assert del_cmd == ["opencode", "session", "delete", "ses_side_1"]
     calls.clear()
     sidecall.opencode_call("propose facts", model="anthropic/claude-haiku-4-5")
     assert "--model" in calls[0][0] and "anthropic/claude-haiku-4-5" in calls[0][0]

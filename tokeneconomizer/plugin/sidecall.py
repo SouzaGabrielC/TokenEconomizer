@@ -267,20 +267,52 @@ def copilot_call(prompt, model="", cli="copilot", timeout=TIMEOUT_S):
     return text, eff
 
 
-def opencode_call(prompt, model=None, cli="opencode", timeout=TIMEOUT_S, cwd=None):
-    cmd = [cli, "run", "--format", "json"]
-    if model:
-        cmd += ["--model", model]
-    cmd += ["--", prompt]
+# Inline OpenCode config that turns every tool permission off, so a side call is a pure text
+# completion in a throwaway directory and loads no project instructions.
+OPENCODE_CONFIG = json.dumps({
+    "permission": {
+        "bash": "deny", "shell": "deny", "edit": "deny", "write": "deny",
+        "patch": "deny", "webfetch": "deny", "websearch": "deny",
+    },
+    "share": "disabled", "autoupdate": False,
+})
+_OC_FLAGS = {}
+
+
+def opencode_flags(cli="opencode"):
+    """`--pure` (1.x: strip user plugins) and `--standalone` (v2: start an isolated in-process
+    server instead of connecting to a shared background server that lacks `TE_SIDECALL=1`)."""
+    if cli not in _OC_FLAGS:
+        try:
+            help_text = subprocess.run([cli, "run", "--help"], capture_output=True, text=True,
+                                       timeout=30, stdin=subprocess.DEVNULL).stdout
+        except (OSError, subprocess.SubprocessError):
+            help_text = ""
+        _OC_FLAGS[cli] = [f for f in ("--pure", "--standalone") if f in help_text]
+    return list(_OC_FLAGS[cli])
+
+
+def opencode_call(prompt, model="", cli="opencode", timeout=TIMEOUT_S, cwd=None):
+    model_args = ["--model", model] if model else []
+    cmd = [cli, "run", *opencode_flags(cli), "--format", "json", *model_args, "--", prompt]
+    env = dict(_env(), OPENCODE_CONFIG_CONTENT=OPENCODE_CONFIG)
     with tempfile.TemporaryDirectory(prefix="te-side-") as tmp:
         run_cwd = cwd or tmp
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                             env=_env(), cwd=run_cwd, stdin=subprocess.DEVNULL)
-    text, usage = trace.opencode_json_reply(out.stdout or "")
+                             env=env, cwd=run_cwd, stdin=subprocess.DEVNULL)
+    text, usage, sid = trace.opencode_run_reply(out.stdout or "")
+    if sid:
+        try:
+            subprocess.run([cli, "session", "delete", sid], capture_output=True, timeout=15,
+                           env=env, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            pass
     if not text:
         _no_reply("opencode", out)
     eff = None
     if usage:
+        usage.pop("cost_usd", None)
+        usage["model"] = usage.get("model") or model or "opencode"
         eff, _ = accounting.effective(usage)
     return text, eff
 

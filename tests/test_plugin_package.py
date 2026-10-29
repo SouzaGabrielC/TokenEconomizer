@@ -497,6 +497,15 @@ if (outcomeFailedShell.exit_code !== 127 || outcomeFailedShell.is_error !== true
   throw new Error("extractToolOutcome failed for shell exit 127: " + JSON.stringify(outcomeFailedShell));
 }
 
+const outcomeMetadataShell = extractToolOutcome({
+  tool: "bash",
+  status: "completed",
+  result: { output: "failed via metadata", metadata: { exit: 2 } }
+});
+if (outcomeMetadataShell.exit_code !== 2 || outcomeMetadataShell.is_error !== true) {
+  throw new Error("extractToolOutcome failed for metadata exit 2: " + JSON.stringify(outcomeMetadataShell));
+}
+
 const outcomeErrorTool = extractToolOutcome({
   tool: "read",
   status: "error",

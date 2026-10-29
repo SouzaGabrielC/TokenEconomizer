@@ -130,7 +130,8 @@ def test_opencode_json_reply_parses_run_events():
             "tokens": {"input": 400, "output": 25, "reasoning": 5,
                        "cache": {"read": 100, "write": 0}}}},
     ]
-    text, usage = trace.opencode_json_reply("\n".join(json.dumps(e) for e in events))
+    raw = "\n".join(json.dumps(e) for e in events)
+    text, usage = trace.opencode_json_reply(raw)
     assert text == "- use python -m pytest"
     assert usage == {
         "input_tokens": 400, "cache_read_input_tokens": 100,
@@ -138,3 +139,6 @@ def test_opencode_json_reply_parses_run_events():
         "cost_usd": 0.0012, "model": "claude-haiku-4-5"
     }
     assert trace.opencode_json_reply("") == ("", None)
+    text2, usage2, sid = trace.opencode_run_reply(raw)
+    assert (text2, usage2, sid) == (text, usage, "ses_1")
+    assert trace.opencode_run_reply("") == ("", None, "")

@@ -11,7 +11,7 @@
  * - Handles `/te` slash command directly inside chat.
  * - Records SQLite traces and aggregates sub-agent sessions into root session folding.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,12 +28,28 @@ const HOOK_TIMEOUT_MS = 60_000;
 const truthy = (v: string | undefined) =>
   ["1", "true", "yes", "on"].includes((v ?? "").trim().toLowerCase());
 
+/** Detect whether OpenCode is running in one-shot `run` mode or interactive `tui`/server mode. */
+function mode(): "run" | "tui" {
+  const env = (process.env.TE_OPENCODE_MODE ?? "").trim().toLowerCase();
+  if (env === "run" || env === "tui") return env;
+  return process.argv.includes("run") ? "run" : "tui";
+}
+
+function launch(script: string, args: string[]): [string, string[]] {
+  if (process.platform === "win32") {
+    const modeArg = script === "te-hook" ? "hook" : "cli";
+    return ["python", [join(SCRIPTS, "te_bootstrap.py"), modeArg, ...args]];
+  }
+  return [join(SCRIPTS, script), args];
+}
+
 interface SessionState {
   sessionID: string;
   parentID: string | null;
   cwd: string;
   manual: string;
   started: boolean;
+  ended: boolean;
   turn: string;
   prompts: number;
 }
@@ -47,10 +63,16 @@ function run(
 ): Promise<string> {
   return new Promise((resolve) => {
     let out = "";
+    const [cmd, cmdArgs] = launch(script, args);
     let child;
     try {
-      child = spawn(join(SCRIPTS, script), args, {
-        env: { ...process.env, ...extra },
+      child = spawn(cmd, cmdArgs, {
+        env: {
+          ...process.env,
+          PYTHONUTF8: "1",
+          TE_OPENCODE_MODE: mode(),
+          ...extra,
+        },
         stdio: ["pipe", "pipe", "ignore"],
       });
     } catch {
@@ -84,6 +106,32 @@ async function hook(
   const out = await run("te-hook", ["--host", "opencode"], JSON.stringify(payload), extra);
   try {
     return JSON.parse(out.trim().split("\n").pop() || "{}") ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/** Synchronous dispatcher call for `process.once("exit")`, where async promises will not settle. */
+function hookSync(
+  payload: Record<string, unknown>,
+  extra: Record<string, string> = {},
+): any {
+  if (truthy(process.env.TE_SIDECALL) || truthy(process.env.TE_DISABLE)) return {};
+  const [cmd, cmdArgs] = launch("te-hook", ["--host", "opencode"]);
+  try {
+    const res = spawnSync(cmd, cmdArgs, {
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+      timeout: HOOK_TIMEOUT_MS,
+      env: {
+        ...process.env,
+        PYTHONUTF8: "1",
+        TE_OPENCODE_MODE: mode(),
+        ...extra,
+      },
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    return JSON.parse((res.stdout || "").trim().split("\n").pop() || "{}") ?? {};
   } catch {
     return {};
   }
@@ -129,6 +177,9 @@ export function extractToolOutcome(
       }
     } else {
       text = String(event?.result?.content ?? rawOut ?? "");
+    }
+    if (exitCode === undefined && typeof event?.result?.metadata?.exit === "number") {
+      exitCode = event.result.metadata.exit;
     }
 
     const isError =
@@ -187,6 +238,7 @@ export async function setup(ctx: any) {
         cwd,
         manual: "",
         started: false,
+        ended: false,
         turn: `${sid}:0`,
         prompts: 0,
       };
@@ -196,6 +248,38 @@ export async function setup(ctx: any) {
     }
     return s;
   };
+
+  const endSession = async (sid: string, reason: string) => {
+    const state = sessions.get(sid);
+    if (!state || state.parentID || state.ended) return;
+    state.ended = true;
+    await hook({
+      session_id: sid,
+      parent_id: null,
+      cwd: state.cwd,
+      hook_event_name: "SessionEnd",
+      reason,
+    });
+  };
+
+  const endSessionSync = (sid: string, reason: string) => {
+    const state = sessions.get(sid);
+    if (!state || state.parentID || state.ended) return;
+    state.ended = true;
+    hookSync({
+      session_id: sid,
+      parent_id: null,
+      cwd: state.cwd,
+      hook_event_name: "SessionEnd",
+      reason,
+    });
+  };
+
+  process.once("exit", () => {
+    for (const sid of sessions.keys()) {
+      endSessionSync(sid, "exit");
+    }
+  });
 
   if (ctx.event?.subscribe) {
     ctx.event.subscribe(async (event: any) => {
@@ -261,17 +345,11 @@ export async function setup(ctx: any) {
           stop_hook_active: false,
         });
         postNotice(ctx, sid, out?.systemMessage);
-      } else if (type === "session.deleted" || type === "session.archived") {
-        const state = sessions.get(sid);
-        if (state && !state.parentID) {
-          await hook({
-            session_id: sid,
-            parent_id: null,
-            cwd: state.cwd,
-            hook_event_name: "SessionEnd",
-            reason: type,
-          });
+        if (mode() === "run" && (!state || !state.parentID)) {
+          await endSession(sid, type);
         }
+      } else if (type === "session.deleted" || type === "session.archived") {
+        await endSession(sid, type);
         sessions.delete(sid);
       }
     });
@@ -396,6 +474,8 @@ export async function setup(ctx: any) {
       if (nudge) {
         if (event.result && typeof event.result.content === "string") {
           event.result.content += `\n\n${nudge}`;
+        } else if (event.result && Array.isArray(event.result.content)) {
+          event.result.content.push({ type: "text", text: `\n\n${nudge}` });
         }
         postNotice(ctx, sid, nudge);
       }
@@ -412,16 +492,8 @@ export async function setup(ctx: any) {
   }
 
   return async () => {
-    for (const [sid, state] of sessions.entries()) {
-      if (!state.parentID) {
-        await hook({
-          session_id: sid,
-          parent_id: null,
-          cwd: state.cwd,
-          hook_event_name: "SessionEnd",
-          reason: "shutdown",
-        });
-      }
+    for (const sid of sessions.keys()) {
+      await endSession(sid, "shutdown");
     }
   };
 }

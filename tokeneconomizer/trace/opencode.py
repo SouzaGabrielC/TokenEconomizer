@@ -30,19 +30,21 @@ def _resolve_session_source(path: Optional[str]) -> Tuple[Optional[str], Optiona
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 content = fh.read().strip()
-            if content.startswith("{"):
+            if content.startswith(("{", "[")):
                 try:
                     data = json.loads(content)
                 except ValueError:
                     # Could be first line of JSONL
                     data = json.loads(content.splitlines()[0])
+                if isinstance(data, list):
+                    return None, None, None, {"info": {}, "messages": [m for m in data if isinstance(m, dict)]}
                 if isinstance(data, dict):
                     if "session_id" in data and ("db_path" in data or os.path.exists(_default_opencode_db())):
                         db = data.get("db_path") or _default_opencode_db()
                         return db, data.get("session_id"), data.get("cwd"), None
-                    if "messages" in data and "info" in data:
-                        info = data.get("info") or {}
-                        return None, info.get("id"), info.get("directory"), data
+                    if "messages" in data:
+                        info = data.get("info") if isinstance(data.get("info"), dict) else {}
+                        return None, info.get("id"), info.get("directory") or data.get("cwd"), data
         except (OSError, ValueError):
             return None, None, None, None
 
@@ -456,13 +458,14 @@ def opencode_session_usage(transcript_path: str, include_subagents: bool = True)
     return out
 
 
-def opencode_json_reply(stdout: str) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Parse `opencode run --format json` stdout into reply text and usage dictionary."""
+def opencode_run_reply(stdout: str) -> Tuple[str, Optional[Dict[str, Any]], str]:
+    """Parse `opencode run --format json` stdout into (reply_text, usage_dict, session_id)."""
     if not stdout or not stdout.strip():
-        return "", None
+        return "", None, ""
 
     texts = []
     usage = None
+    sid = ""
     for line in stdout.splitlines():
         line = line.strip()
         if not line:
@@ -474,23 +477,42 @@ def opencode_json_reply(stdout: str) -> Tuple[str, Optional[Dict[str, Any]]]:
         if not isinstance(ev, dict):
             continue
 
+        sid = sid or str(ev.get("sessionID") or "")
         etype = ev.get("type")
-        part = ev.get("part") or {}
+        part = ev.get("part") if isinstance(ev.get("part"), dict) else {}
 
         if etype == "text":
             txt = part.get("text")
             if isinstance(txt, str):
                 texts.append(txt)
         elif etype == "step_finish":
-            toks = part.get("tokens") or {}
-            cache = toks.get("cache") or {}
-            usage = {
-                "input_tokens": int(toks.get("input") or 0),
-                "cache_read_input_tokens": int(cache.get("read") or 0),
-                "cache_creation_input_tokens": int(cache.get("write") or 0),
-                "output_tokens": int(toks.get("output") or 0) + int(toks.get("reasoning") or 0),
-                "cost_usd": part.get("cost"),
-                "model": part.get("modelID") or part.get("model"),
-            }
+            toks = part.get("tokens")
+            if isinstance(toks, dict):
+                cache = toks.get("cache") if isinstance(toks.get("cache"), dict) else {}
+                step_u = {
+                    "input_tokens": int(toks.get("input") or 0),
+                    "cache_read_input_tokens": int(cache.get("read") or 0),
+                    "cache_creation_input_tokens": int(cache.get("write") or 0),
+                    "output_tokens": int(toks.get("output") or 0) + int(toks.get("reasoning") or 0),
+                    "cost_usd": float(part.get("cost") or 0),
+                }
+                if usage is None:
+                    usage = dict(step_u)
+                    usage["model"] = part.get("modelID") or part.get("model")
+                else:
+                    for k in ("input_tokens", "cache_read_input_tokens",
+                              "cache_creation_input_tokens", "output_tokens", "cost_usd"):
+                        usage[k] = (usage.get(k) or 0) + step_u[k]
+                    if not usage.get("model") and (part.get("modelID") or part.get("model")):
+                        usage["model"] = part.get("modelID") or part.get("model")
 
-    return "".join(texts), usage
+    return "".join(texts).strip(), usage, sid
+
+
+def opencode_json_reply(stdout: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """Parse `opencode run --format json` stdout into reply text and usage dictionary."""
+    text, usage, _ = opencode_run_reply(stdout)
+    return text, usage
+
+
+opencode_session_info = opencode_session_header
