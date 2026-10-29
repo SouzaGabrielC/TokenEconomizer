@@ -15,9 +15,11 @@ def _default_opencode_db() -> str:
     return os.path.join(xdg_data, "opencode", "opencode.db")
 
 
-def _resolve_session_source(path: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[dict]]:
+def _resolve_session_source(path: Optional[str]) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[dict]]:
     """(db_path, session_id, cwd, export_json_dict)"""
-    if not path or not os.path.exists(path):
+    if not path:
+        return None, None, None, None
+    if not os.path.exists(path):
         if "#" in path:
             db_p, sid = path.split("#", 1)
             if os.path.exists(db_p):
@@ -148,15 +150,28 @@ def _query_sessions_and_messages_sqlite(
         if not sessions:
             return [], []
 
-        sids = [s["id"] for s in sessions]
-        placeholders = ",".join("?" for _ in sids)
-        m_rows = cur.execute(
-            f"SELECT m.id, m.session_id, m.type, m.seq, m.time_created, m.data FROM session_message m "
-            f"JOIN session_v2 s ON m.session_id = s.id "
-            f"WHERE m.session_id IN ({placeholders}) "
-            f"ORDER BY s.time_created ASC, m.time_created ASC, m.seq ASC",
-            sids,
-        ).fetchall()
+        if include_subagents:
+            m_query = """
+                WITH RECURSIVE tree AS (
+                    SELECT id, time_created FROM session_v2 WHERE id = ?
+                    UNION ALL
+                    SELECT s.id, s.time_created FROM session_v2 s JOIN tree t ON s.parent_id = t.id
+                )
+                SELECT m.id, m.session_id, m.type, m.seq, m.time_created, m.data
+                FROM session_message m
+                JOIN tree t ON m.session_id = t.id
+                ORDER BY t.time_created ASC, m.time_created ASC, m.seq ASC
+            """
+            m_rows = cur.execute(m_query, (root_id,)).fetchall()
+        else:
+            m_query = """
+                SELECT m.id, m.session_id, m.type, m.seq, m.time_created, m.data
+                FROM session_message m
+                JOIN session_v2 s ON m.session_id = s.id
+                WHERE m.session_id = ?
+                ORDER BY s.time_created ASC, m.time_created ASC, m.seq ASC
+            """
+            m_rows = cur.execute(m_query, (root_id,)).fetchall()
 
         messages = []
         for mr in m_rows:
@@ -273,7 +288,7 @@ def opencode_session_to_claude(transcript_path: str, out_path: str) -> Optional[
 
             state = p.get("state") or {}
             tool_input = state.get("input") or {}
-            workdir = tool_input.get("workdir") if isinstance(tool_input, dict) else None
+            workdir = (tool_input.get("workdir") or tool_input.get("cwd")) if isinstance(tool_input, dict) else None
             entry_cwd = workdir or sess_cwd
 
             output_text = state.get("output")
@@ -284,7 +299,7 @@ def opencode_session_to_claude(transcript_path: str, out_path: str) -> Optional[
 
             meta = state.get("metadata") or {}
             exit_code = meta.get("exit")
-            is_error = (state.get("status") == "error") or (
+            is_error = (state.get("status") in ("error", "failed")) or (
                 exit_code is not None and exit_code != 0
             )
 

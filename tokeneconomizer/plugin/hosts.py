@@ -118,8 +118,8 @@ class Host:
     def session_id(self, p):
         return str(p.get("session_id") or "")
 
-    def transcript(self, p):
-        return p.get("transcript_path") or ""
+    def transcript(self, p, env=None):
+        return (p or {}).get("transcript_path") or ""
 
     def cwd(self, p, env):
         return p.get("cwd") or env.get("CLAUDE_PROJECT_DIR") or os.getcwd()
@@ -382,28 +382,36 @@ class OpenCode(Host):
     def is_subagent(self, payload):
         return bool((payload or {}).get("is_subagent"))
 
-    def resolve_transcript(self, payload):
+    def transcript(self, p, env=None):
+        return self.resolve_transcript(p, env=env)
+
+    def resolve_transcript(self, payload, env=None):
         if (payload or {}).get("transcript_path"):
             return payload["transcript_path"]
         sid = self.session_id(payload)
         if not sid:
             return ""
         from .paths import state_root
-        s_dir = os.path.join(state_root(), "sessions", "opencode-logs")
-        os.makedirs(s_dir, exist_ok=True)
-        pointer_path = os.path.join(s_dir, f"{sid}.json")
-        xdg_data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-        default_db = os.path.join(xdg_data, "opencode", "opencode.db")
-        data = {
-            "session_id": sid,
-            "parent_id": (payload or {}).get("parent_id"),
-            "cwd": (payload or {}).get("cwd") or os.getcwd(),
-            "db_path": (payload or {}).get("db_path") or default_db,
-            "updated": time.time(),
-        }
-        with open(pointer_path, "w", encoding="utf-8") as fh:
-            json.dump(data, fh)
-        return pointer_path
+        s_dir = os.path.join(state_root(env), "sessions", "opencode-logs")
+        try:
+            os.makedirs(s_dir, exist_ok=True)
+            pointer_path = os.path.join(s_dir, f"{sid}.json")
+            if (payload or {}).get("hook_event_name") == "SessionEnd" and not os.path.exists(pointer_path):
+                return ""
+            xdg_data = (env or {}).get("XDG_DATA_HOME") or os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+            default_db = os.path.join(xdg_data, "opencode", "opencode.db")
+            data = {
+                "session_id": sid,
+                "parent_id": (payload or {}).get("parent_id"),
+                "cwd": (payload or {}).get("cwd") or os.getcwd(),
+                "db_path": (payload or {}).get("db_path") or default_db,
+                "updated": time.time(),
+            }
+            with open(pointer_path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            return pointer_path
+        except OSError:
+            return ""
 
     def tool_call(self, p):
         args = p.get("tool_input") if isinstance(p.get("tool_input"), dict) else {}
@@ -442,8 +450,9 @@ class OpenCode(Host):
 
 
 def copilot_home(env=None):
-    env = os.environ if env is None else env
-    return env.get("COPILOT_HOME") or os.path.join(os.path.expanduser("~"), ".copilot")
+    if env and env.get("COPILOT_HOME"):
+        return env["COPILOT_HOME"]
+    return os.environ.get("COPILOT_HOME") or os.path.join(os.path.expanduser("~"), ".copilot")
 
 
 class Copilot(Host):
@@ -455,11 +464,11 @@ class Copilot(Host):
     # and missing the prompt cache; the same text given again rebuilds it as it was.
     keeps_start_context = False
 
-    def transcript(self, p):
+    def transcript(self, p, env=None):
         # Only Stop carries `transcript_path`; the log's location is fixed by the session id.
         sid = self.session_id(p)
-        return p.get("transcript_path") or (
-            os.path.join(copilot_home(), "session-state", sid, "events.jsonl") if sid else "")
+        return (p or {}).get("transcript_path") or (
+            os.path.join(copilot_home(env), "session-state", sid, "events.jsonl") if sid else "")
 
     def cwd(self, p, env):
         return p.get("cwd") or env.get("COPILOT_PROJECT_DIR") or os.getcwd()
@@ -531,6 +540,7 @@ def _ancestor_args(limit=4):
 
 
 HOSTS = {"claude": ClaudeCode, "codex": Codex, "copilot": Copilot, "opencode": OpenCode, "pi": Pi}
+OpenCodeHost = OpenCode
 
 
 def default_host(env=None, recent=None):

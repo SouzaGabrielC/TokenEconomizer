@@ -55,7 +55,7 @@ class LiveController:
         return s
 
     def _save(self, s):
-        tp = self.host.transcript(self.p)
+        tp = self.host.transcript(self.p, env=self.ctx.env)
         if tp:
             s["transcript"] = tp
         s["updated"] = time.time()
@@ -344,7 +344,7 @@ class LiveController:
                 self._log("abort", reason=reason, tool_calls=g.cum_turns, envelope=envelope,
                           delivered="notice")
                 if not self.cfg.shadow:
-                    headless = self.ctx.is_headless(self.host.transcript(self.p))
+                    headless = self.ctx.is_headless(self.host.transcript(self.p, env=self.ctx.env))
                     text = (f"TokenEconomizer: this turn still looks stuck after a redirect "
                             f"({short}, {g.cum_turns} tool calls). {self.host.stop_hint(headless)}")
                     out = self.host.notice(text)
@@ -361,7 +361,7 @@ class LiveController:
         # An end with no start and no session log is no session to learn from: Codex 0.163.0
         # sends one for a thread that never ran a prompt (`codex debug prompt-input`), and
         # recording it would only leave an unreadable fold in the ledger.
-        tp = self.host.transcript(self.p)
+        tp = self.host.transcript(self.p, env=self.ctx.env)
         if not os.path.exists(self.store.path(self._sess_name())) and not (
                 tp and os.path.exists(tp)):
             return {}

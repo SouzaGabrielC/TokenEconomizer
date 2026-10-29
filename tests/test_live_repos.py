@@ -671,3 +671,59 @@ def test_a_change_where_the_state_is_read_only_is_refused_whole(tmp_path, env, m
     assert not os.path.exists(os.path.join(os.path.dirname(st.base), "config.json"))
     # ... and reading still works there
     assert cli.main(["--host", "claude", "--cwd", repo_dir, "toolprune"]) == 0
+
+
+def test_opencode_session_pointer_resolution_and_folding(tmp_path, monkeypatch):
+    """Real OpenCode payloads pass no transcript_path: Host.transcript(p) resolves and writes
+    the pointer file, and fold_session folds the SQLite DB cleanly into ledger.jsonl without error."""
+    from tokeneconomizer.plugin import hosts
+    from tests.test_opencode_trace import make_opencode_db
+    from tokeneconomizer.plugin.fold import fold_session, pending_sessions
+
+    home = tmp_path / "te_home"
+    monkeypatch.setenv("TOKENECONOMIZER_HOME", str(home))
+    work = git_repo(str(tmp_path / "repo"), "https://github.com/test/repo")
+
+    env = {"TOKENECONOMIZER_HOME": str(home), "PATH": os.environ["PATH"]}
+    sid = "ses_live_ptr_1"
+    db_file = tmp_path / "opencode.db"
+    make_opencode_db(
+        db_file,
+        sessions=[{"id": sid, "parent_id": None, "directory": work, "model": "claude-sonnet-4-5", "time_created": 1000}],
+        messages=[
+            {"id": "m1", "session_id": sid, "seq": 1, "data": {
+                "role": "user", "parts": [{"type": "text", "text": "build project"}]}},
+            {"id": "m2", "session_id": sid, "seq": 2, "data": {
+                "role": "assistant", "modelID": "claude-sonnet-4-5",
+                "tokens": {"input": 120, "output": 45, "reasoning": 0, "cache": {"read": 600, "write": 0}},
+                "cost": 0.003,
+                "parts": [{"type": "tool", "callID": "c1", "tool": "shell", "state": {
+                    "status": "completed", "input": {"command": "make test"},
+                    "output": "ok", "metadata": {"exit": 0}}}]}},
+        ],
+    )
+
+    base = {"session_id": sid, "cwd": work, "db_path": str(db_file)}
+    call(env, dict(base, hook_event_name="SessionStart", source="startup"), "opencode")
+    call(env, dict(base, hook_event_name="SessionEnd", reason="exit"), "opencode")
+
+    ptr = os.path.join(str(home), "sessions", "opencode-logs", f"{sid}.json")
+    assert os.path.exists(ptr)
+    with open(ptr, encoding="utf-8") as fh:
+        ptr_data = json.load(fh)
+    assert ptr_data["session_id"] == sid and ptr_data["cwd"] == work
+
+    assert cli.main(["--host", "opencode", "--cwd", work, "fold", "--session", sid]) == 0
+
+    key = paths.repo_identity(work, env).key
+    ledger_path = os.path.join(str(home), "repos", key, "opencode", "ledger.jsonl")
+    assert os.path.exists(ledger_path)
+    entries = [json.loads(line) for line in open(ledger_path, encoding="utf-8")]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.get("error") is None
+    assert entry["input_tokens"] == 120
+    assert entry["output_tokens"] == 45
+    assert entry["cache_read_input_tokens"] == 600
+    assert entry["prompts"] == 1
+

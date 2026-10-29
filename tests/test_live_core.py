@@ -478,6 +478,14 @@ def test_the_opencode_host_reads_what_the_plugin_sends(tmp_path, monkeypatch):
     assert ev_err["tool"] == "read" and ev_err["status"] == "error"
     assert h.headless({"TE_OPENCODE_MODE": "run"}) and not h.headless({})
     assert hosts.detect({"session_id": "ses_1"}, hint="opencode").name == "opencode"
+    assert hasattr(hosts, "OpenCodeHost") and hosts.OpenCodeHost is hosts.OpenCode
+    assert h.transcript({"transcript_path": "/tmp/custom.json"}) == "/tmp/custom.json"
+    monkeypatch.setenv("TOKENECONOMIZER_HOME", str(tmp_path / "te_home"))
+    ptr = h.transcript({"session_id": "ses_ptr_test", "cwd": "/w/repo"})
+    assert ptr.endswith("ses_ptr_test.json") and os.path.exists(ptr)
+    with open(ptr, encoding="utf-8") as fh:
+        data = json.load(fh)
+    assert data["session_id"] == "ses_ptr_test" and data["cwd"] == "/w/repo"
 
 
 # ---- the guard sees edits made through the shell ---------------------------------------------

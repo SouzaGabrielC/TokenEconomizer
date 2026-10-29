@@ -114,10 +114,11 @@ def test_sqlite_pointer_reads_root_and_recursive_subagents(tmp_path):
 
 def test_missing_or_corrupt_inputs_fail_open(tmp_path):
     missing = str(tmp_path / "nope.json")
-    assert trace.opencode_session_header(missing) == {}
-    assert trace.opencode_prompt_count(missing) == 0
-    assert trace.opencode_session_to_claude(missing, str(tmp_path / "out.jsonl")) is None
-    assert trace.opencode_session_usage(missing)["requests"] == 0
+    for bad in (None, "", missing):
+        assert trace.opencode_session_header(bad) == {}
+        assert trace.opencode_prompt_count(bad) == 0
+        assert trace.opencode_session_to_claude(bad, str(tmp_path / "out.jsonl")) is None
+        assert trace.opencode_session_usage(bad)["requests"] == 0
 
 
 def test_opencode_json_reply_parses_run_events():
