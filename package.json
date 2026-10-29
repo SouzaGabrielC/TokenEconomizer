@@ -12,7 +12,9 @@
   ],
   "license": "Apache-2.0",
   "repository": "https://github.com/microsoft/TokenEconomizer",
+  "main": "./plugin/opencode/tokeneconomizer.ts",
   "exports": {
+    ".": "./plugin/opencode/tokeneconomizer.ts",
     "./server": "./plugin/opencode/tokeneconomizer.ts",
     "./opencode": "./plugin/opencode/tokeneconomizer.ts"
   },

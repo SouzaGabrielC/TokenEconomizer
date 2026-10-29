@@ -303,8 +303,8 @@ def test_the_plugin_directory_is_also_a_pi_package():
     (root_ext,) = root["pi"]["extensions"]
     assert os.path.realpath(os.path.join(os.path.dirname(PLUGIN), root_ext)) == \
         os.path.realpath(os.path.join(PLUGIN, ext))
-    assert {k: v for k, v in root.items() if k not in ("pi", "exports")} == {
-        k: v for k, v in pkg.items() if k not in ("pi", "exports")
+    assert {k: v for k, v in root.items() if k not in ("pi", "exports", "main")} == {
+        k: v for k, v in pkg.items() if k not in ("pi", "exports", "main")
     }
     # no lockfile: Claude Code installs a plugin's npm dependencies only when one exists,
     # and this package has none to install (the Pi API is a peer dependency)
@@ -322,8 +322,10 @@ def test_the_plugin_directory_is_also_an_opencode_v2_plugin():
     assert "opencode-plugin" in root.get("keywords", [])
 
     assert "exports" in pkg and "exports" in root
+    assert pkg["exports"].get(".") == "./opencode/tokeneconomizer.ts"
     assert pkg["exports"].get("./server") == "./opencode/tokeneconomizer.ts"
     assert pkg["exports"].get("./opencode") == "./opencode/tokeneconomizer.ts"
+    assert root["exports"].get(".") == "./plugin/opencode/tokeneconomizer.ts"
     assert root["exports"].get("./server") == "./plugin/opencode/tokeneconomizer.ts"
     assert root["exports"].get("./opencode") == "./plugin/opencode/tokeneconomizer.ts"
 
