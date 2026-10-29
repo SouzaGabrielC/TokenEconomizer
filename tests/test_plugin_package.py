@@ -557,7 +557,13 @@ const makeMockCtx = (dir) => {
       }
     },
     command: {
-      transform(cmd) { commands.push(cmd); }
+      transform(cmd) {
+        if (typeof cmd === "function") {
+          cmd({ add(c) { commands.push(c); } });
+        } else {
+          commands.push(cmd);
+        }
+      }
     },
     _events: events,
     _hooks: hooks,

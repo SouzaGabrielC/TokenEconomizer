@@ -163,23 +163,29 @@ Start `pi` and run `/te status`.
 
 **OpenCode**
 
-Add TokenEconomizer to `~/.config/opencode/opencode.json` (global) or `opencode.json` in a project — either directly from Git (no manual clone needed) or from a local clone:
+Install directly from Git with the OpenCode CLI (or add it under `"plugins"` in `~/.config/opencode/opencode.json` / `.opencode/opencode.json`):
+
+```sh
+opencode plugin add git+https://github.com/SouzaGabrielC/TokenEconomizer.git
+```
+
+Or in `~/.config/opencode/opencode.json` (directly from Git or from a local clone):
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    "tokeneconomizer@git+https://github.com/SouzaGabrielC/TokenEconomizer.git#feat/opencode-v2-plugin"
+  "plugins": [
+    "git+https://github.com/SouzaGabrielC/TokenEconomizer.git"
   ]
 }
 ```
 
-Or from a local clone:
+From a local clone:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
+  "plugins": [
     "/absolute/path/to/TokenEconomizer/plugin"
   ]
 }
@@ -199,7 +205,7 @@ To update:
 | Claude Code, Copilot CLI | `git pull` in the clone |
 | Codex | `git pull` in the clone, then the `codex plugin add` line again |
 | Pi | `pi update --extensions` |
-| OpenCode | `git pull` in the clone (or clear `~/.cache/opencode/node_modules/tokeneconomizer` when installed from Git) |
+| OpenCode | `opencode plugin update` (or `git pull` in the clone) |
 
 **[`plugin/README.md`](plugin/README.md)** walks through each agent in more detail, including
 uninstalling, using Copilot with your own model key, and troubleshooting.

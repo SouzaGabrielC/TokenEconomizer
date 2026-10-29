@@ -286,15 +286,22 @@ from); `pi config` turns it off without removing it. Optional: `rm -rf ~/.tokene
 
 ## OpenCode
 
-**1. Install.** OpenCode v2 (`2.2.0+`) loads server plugins from `~/.config/opencode/opencode.json` (global) or `opencode.json` (per-project). You can point it either directly at the Git repository (installed and cached automatically by OpenCode's Bun package manager) or at a local clone:
+**1. Install.** OpenCode v2 (`2.2.0+`) loads server plugins configured under `"plugins"` in `~/.config/opencode/opencode.json` (global) or `opencode.json` (per-project). You can install it directly from Git (no manual clone needed) or point it at a local clone:
 
-*Directly from Git (no manual clone needed):*
+*Directly from Git:*
+
+```bash
+opencode plugin add git+https://github.com/SouzaGabrielC/TokenEconomizer.git
+opencode plugin list        # should show tokeneconomizer ...
+```
+
+(Or add it manually to `~/.config/opencode/opencode.json`:)
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    "tokeneconomizer@git+https://github.com/SouzaGabrielC/TokenEconomizer.git#feat/opencode-v2-plugin"
+  "plugins": [
+    "git+https://github.com/SouzaGabrielC/TokenEconomizer.git"
   ]
 }
 ```
@@ -304,11 +311,13 @@ from); `pi config` turns it off without removing it. Optional: `rm -rf ~/.tokene
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
+  "plugins": [
     "/path/to/TokenEconomizer/plugin"
   ]
 }
 ```
+
+*(Note: OpenCode v2 uses `"plugins"` in `opencode.json`, whereas OpenCode 1.x used `"plugin"`.)*
 
 **2. Check it.** Start OpenCode (in the TUI or through a GUI client connected to the OpenCode server, such as OpenChamber) and type `/te status` in the chat. The commands are `/te status`, `/te microskills`, `/te config …`, `/te repomap …` and `/te repos`, or from a terminal inside the repository: `~/.tokeneconomizer/bin/te --host opencode <command>` (the `~/.tokeneconomizer/bin/te` launcher is created automatically on the first session start).
 
@@ -320,9 +329,9 @@ from); `pi config` turns it off without removing it. Optional: `rm -rf ~/.tokene
 
 **4. Messages and headless runs.** In interactive sessions (TUI and OpenChamber), the plugin posts one-line notices directly into the session timeline via `ctx.session.synthetic({ resume: false })` without triggering an extra model turn; under `opencode run` (or when `synthetic` is unavailable), notices are written to stderr. Press **Esc** in the TUI to interrupt a stuck turn, or **Ctrl+C** under `opencode run`.
 
-**Update.** If installed from a local clone, run `git pull` in the clone and restart OpenCode. If installed via a `git+https://` package spec, remove OpenCode's cached package (`rm -rf ~/.cache/opencode/node_modules/tokeneconomizer ~/.cache/opencode/bun.lock*`) and restart OpenCode so Bun fetches the latest commit.
+**Update.** Run `opencode plugin update` when installed from Git, or `git pull` in the clone when installed from a local path.
 
-**Uninstall.** Remove the `"tokeneconomizer..."` entry from `opencode.json`. Optional: `rm -rf ~/.tokeneconomizer`.
+**Uninstall.** Run `opencode plugin remove git+https://github.com/SouzaGabrielC/TokenEconomizer.git` (or remove the entry from `"plugins"` in `opencode.json`). Optional: `rm -rf ~/.tokeneconomizer`.
 
 ## What to expect
 

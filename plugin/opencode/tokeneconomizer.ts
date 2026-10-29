@@ -281,82 +281,115 @@ export async function setup(ctx: any) {
     }
   });
 
-  if (ctx.event?.subscribe) {
-    ctx.event.subscribe(async (event: any) => {
-      const type = event?.type;
-      const sid =
-        event?.sessionID || event?.id || event?.info?.id || event?.info?.sessionID;
-      if (!sid) return;
+  const handleEvent = async (rawEvent: any) => {
+    const type = rawEvent?.type;
+    const ev = rawEvent?.properties ?? rawEvent?.data ?? rawEvent;
+    const sid =
+      ev?.sessionID ||
+      ev?.id ||
+      ev?.info?.id ||
+      ev?.info?.sessionID ||
+      rawEvent?.sessionID ||
+      rawEvent?.id;
+    if (!sid || !type) return;
 
-      if (type === "session.created") {
-        const parentID = event.parentID ?? event.info?.parentID ?? null;
-        const cwd =
-          event.location?.directory ||
-          event.info?.directory ||
-          ctx.worktree ||
-          ctx.directory ||
-          process.cwd();
-        const state = getOrCreateSession(sid, parentID, cwd);
+    if (type === "session.created") {
+      const parentID = ev.parentID ?? ev.info?.parentID ?? rawEvent?.parentID ?? null;
+      const cwd =
+        ev.location?.directory ||
+        ev.info?.directory ||
+        rawEvent?.location?.directory ||
+        ctx.location?.directory ||
+        ctx.location?.path ||
+        ctx.worktree ||
+        ctx.directory ||
+        process.cwd();
+      const state = getOrCreateSession(sid, parentID, cwd);
 
-        if (!parentID) {
+      if (!parentID) {
+        const out = await hook({
+          session_id: sid,
+          parent_id: null,
+          cwd,
+          hook_event_name: "SessionStart",
+          source: "startup",
+        });
+        state.manual = out?.hookSpecificOutput?.additionalContext ?? "";
+        state.started = true;
+        postNotice(ctx, sid, out?.systemMessage);
+      } else {
+        const parentState = sessions.get(parentID);
+        if (parentState && parentState.manual) {
+          state.manual = parentState.manual;
+          state.started = true;
+        } else {
           const out = await hook({
             session_id: sid,
-            parent_id: null,
+            parent_id: parentID,
             cwd,
             hook_event_name: "SessionStart",
             source: "startup",
+            is_subagent: false,
           });
           state.manual = out?.hookSpecificOutput?.additionalContext ?? "";
           state.started = true;
           postNotice(ctx, sid, out?.systemMessage);
-        } else {
-          const parentState = sessions.get(parentID);
-          if (parentState && parentState.manual) {
-            state.manual = parentState.manual;
-            state.started = true;
-          } else {
-            const out = await hook({
-              session_id: sid,
-              parent_id: parentID,
-              cwd,
-              hook_event_name: "SessionStart",
-              source: "startup",
-              is_subagent: false,
-            });
-            state.manual = out?.hookSpecificOutput?.additionalContext ?? "";
-            state.started = true;
-            postNotice(ctx, sid, out?.systemMessage);
-          }
         }
-      } else if (
-        type === "session.execution.succeeded" ||
-        type === "session.execution.failed" ||
-        type === "session.execution.interrupted"
-      ) {
-        const state = sessions.get(sid);
-        const cwd = state?.cwd || ctx.worktree || ctx.directory || process.cwd();
-        const turn = state?.turn || `${sid}:1`;
-        const out = await hook({
-          session_id: sid,
-          parent_id: state?.parentID ?? null,
-          cwd,
-          hook_event_name: "Stop",
-          prompt_id: turn,
-          stop_hook_active: false,
-        });
-        postNotice(ctx, sid, out?.systemMessage);
-        if (mode() === "run" && (!state || !state.parentID)) {
-          await endSession(sid, type);
-        }
-      } else if (type === "session.deleted" || type === "session.archived") {
-        await endSession(sid, type);
-        sessions.delete(sid);
       }
-    });
+    } else if (
+      type === "session.execution.succeeded" ||
+      type === "session.execution.failed" ||
+      type === "session.execution.interrupted" ||
+      type === "session.idle"
+    ) {
+      const state = sessions.get(sid);
+      const cwd =
+        state?.cwd ||
+        ctx.location?.directory ||
+        ctx.location?.path ||
+        ctx.worktree ||
+        ctx.directory ||
+        process.cwd();
+      const turn = state?.turn || `${sid}:1`;
+      const out = await hook({
+        session_id: sid,
+        parent_id: state?.parentID ?? null,
+        cwd,
+        hook_event_name: "Stop",
+        prompt_id: turn,
+        stop_hook_active: false,
+      });
+      postNotice(ctx, sid, out?.systemMessage);
+      if (mode() === "run" && (!state || !state.parentID)) {
+        await endSession(sid, type);
+      }
+    } else if (type === "session.deleted" || type === "session.archived") {
+      await endSession(sid, type);
+      sessions.delete(sid);
+    }
+  };
+
+  if (ctx.event?.subscribe) {
+    try {
+      const sub = ctx.event.subscribe(handleEvent);
+      if (sub && typeof sub[Symbol.asyncIterator] === "function") {
+        (async () => {
+          try {
+            for await (const ev of sub) {
+              await handleEvent(ev);
+            }
+          } catch {
+            /* stream ended */
+          }
+        })();
+      }
+    } catch {
+      /* ignore if event stream unavailable */
+    }
   }
 
   if (ctx.session?.hook) {
-    ctx.session.hook("prompt", async (event: any) => {
+    await ctx.session.hook("prompt", async (event: any) => {
       const sid = event?.sessionID;
       if (!sid) return;
       const state = getOrCreateSession(sid);
@@ -419,7 +452,7 @@ export async function setup(ctx: any) {
       postNotice(ctx, sid, out?.systemMessage);
     });
 
-    ctx.session.hook("context", async (event: any) => {
+    await ctx.session.hook("context", async (event: any) => {
       const sid = event?.sessionID;
       if (!sid) return;
       const state = getOrCreateSession(sid);
@@ -445,7 +478,7 @@ export async function setup(ctx: any) {
   }
 
   if (ctx.tool?.hook) {
-    ctx.tool.hook("execute.after", async (event: any) => {
+    await ctx.tool.hook("execute.after", async (event: any) => {
       const sid = event?.sessionID;
       if (!sid) return;
       const state = getOrCreateSession(sid);
@@ -484,11 +517,41 @@ export async function setup(ctx: any) {
   }
 
   if (ctx.command?.transform) {
-    ctx.command.transform({
-      name: "te",
-      description:
-        "TokenEconomizer: status | microskills | config | repos (what it learned here, what it did)",
-    });
+    try {
+      await ctx.command.transform((reg: any) => {
+        if (typeof reg?.add === "function") {
+          reg.add({
+            id: "te",
+            name: "te",
+            description:
+              "TokenEconomizer: status | microskills | config | repos (what it learned here, what it did)",
+            execute: async (input: any) => {
+              const sid = input?.sessionID || "";
+              const cwd =
+                (sid && sessions.get(sid)?.cwd) ||
+                ctx.location?.directory ||
+                ctx.location?.path ||
+                ctx.worktree ||
+                ctx.directory ||
+                process.cwd();
+              const rawArgs = String(input?.arguments ?? input?.args ?? "").trim();
+              const argv = rawArgs ? rawArgs.split(/\s+/).filter(Boolean) : ["status"];
+              const out = await run(
+                "te",
+                ["--host", "opencode", "--cwd", cwd, ...argv],
+                "",
+                sid ? { TE_SESSION_ID: sid } : {},
+              );
+              const msg = out.trim() || "te: no output (is Python 3.10+ on PATH?)";
+              if (sid) postNotice(ctx, sid, msg);
+              return msg;
+            },
+          });
+        }
+      });
+    } catch {
+      /* ignore if command transform shape differs */
+    }
   }
 
   return async () => {
