@@ -107,7 +107,7 @@ follow. Four principles guide the mechanisms:
 
 ## Quick start
 
-You need one of the four agents, signed in any way it supports, and Python 3.10 or newer on
+You need one of the five agents, signed in any way it supports, and Python 3.10 or newer on
 `PATH`. The plugin needs no API key of its own and never handles credentials, so any plan or
 login works.
 
@@ -163,17 +163,29 @@ Start `pi` and run `/te status`.
 
 **OpenCode**
 
-Add TokenEconomizer to your `~/.config/opencode/opencode.json` (or `.opencode/opencode.json` in a project):
+Add TokenEconomizer to `~/.config/opencode/opencode.json` (global) or `opencode.json` in a project — either directly from Git (no manual clone needed) or from a local clone:
 
 ```json
 {
+  "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "/absolute/path/to/TokenEconomizer"
+    "tokeneconomizer@git+https://github.com/SouzaGabrielC/TokenEconomizer.git#feat/opencode-v2-plugin"
   ]
 }
 ```
 
-Start `opencode` (in the TUI or through OpenChamber) and run `/te status`.
+Or from a local clone:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "/absolute/path/to/TokenEconomizer/plugin"
+  ]
+}
+```
+
+Start `opencode` (in the TUI or through a GUI client such as OpenChamber) and run `/te status` (or `~/.tokeneconomizer/bin/te --host opencode status` in a terminal).
 
 If the install worked, the status command prints a short status block. `refresh-catalog`
 records every tool a session loads (without a model call), so that tool pruning can consider all
@@ -184,9 +196,10 @@ To update:
 
 | Agent | Update |
 |---|---|
-| Claude Code, Copilot CLI, OpenCode | `git pull` in the clone |
+| Claude Code, Copilot CLI | `git pull` in the clone |
 | Codex | `git pull` in the clone, then the `codex plugin add` line again |
 | Pi | `pi update --extensions` |
+| OpenCode | `git pull` in the clone (or clear `~/.cache/opencode/node_modules/tokeneconomizer` when installed from Git) |
 
 **[`plugin/README.md`](plugin/README.md)** walks through each agent in more detail, including
 uninstalling, using Copilot with your own model key, and troubleshooting.
@@ -225,7 +238,7 @@ commands. They have the same names on every agent; only the way you type them di
 |---|---|
 | `status` | what it learned and did here, and what your sessions cost |
 | `microskills` | the facts it injects, and those still forming |
-| `toolprune` | the tools it left out, and the evidence (not on Pi) |
+| `toolprune` | the tools it left out, and the evidence (not on Pi or OpenCode) |
 | `toolprune restore` | give them back; they will not be removed again |
 | `config` | every setting in effect |
 | `config set microskills=on` | turn a mechanism on (or `=off`) in this repository; add `--global` for every repository |
@@ -294,6 +307,12 @@ what it can leave out differs:
 | Codex | capability packages | `.codex/config.toml` |
 | Copilot CLI | whole MCP servers | `.github/copilot/settings.local.json` |
 | Pi | nothing (Pi loads only four tools) | — |
+| OpenCode | nothing (built-in core tools kept) | — |
+
+On OpenCode, the plugin also propagates the session's frozen manual (`microskills` and `repomap`) to
+spawned **sub-agents** (`parentID`), guards sub-agent turns with the loop guard, and rolls up the
+entire sub-agent tree from OpenCode's SQLite database (`opencode.db`) into the root session when it
+folds, so a multi-agent spec workflow counts as a single session.
 
 Tool pruning adds only its own entries and never touches deny rules you wrote; a settings file it
 creates is kept out of git (`.git/info/exclude`). On Claude Code, the session-start line that says
@@ -319,7 +338,7 @@ redirects, you see one line that ends with how to stop it:
 > calls). Press Esc to interrupt it.
 
 Where that line appears, and how to stop the turn, in the terminal UI and in a headless run
-(`claude -p`, `codex exec`, `copilot -p`, `pi -p`):
+(`claude -p`, `codex exec`, `copilot -p`, `pi -p`, `opencode run`):
 
 | Agent | Interactive: where it shows | How to stop | Headless: where it shows | How to stop |
 |---|---|---|---|---|
@@ -327,6 +346,7 @@ Where that line appears, and how to stop the turn, in the terminal UI and in a h
 | Codex | in the conversation | Esc, then `/stop` | not shown | Ctrl+C |
 | Copilot CLI | in the conversation | Esc twice | on stdout | Ctrl+C |
 | Pi | as a notification | Esc | on stderr | Ctrl+C |
+| OpenCode | in the conversation (TUI / OpenChamber) | Esc | on stderr | Ctrl+C |
 
 - **Claude Code** shows a plugin's own lines only in its detailed transcript (Ctrl+O), so the
   plugin asks Claude to repeat this one in its reply; the model may word it differently or leave
@@ -347,7 +367,7 @@ agent's own limits; afterwards, `te status` counts the redirects and "still stuc
 | [`tokeneconomizer/loopguard`](tokeneconomizer/loopguard/) | Failure-loop intervention: the per-call guard and its per-repository envelope |
 | [`tokeneconomizer/trace`](tokeneconomizer/trace/) | Each agent's session log, read into one shape |
 | [`tokeneconomizer/plugin`](tokeneconomizer/plugin/) | The runtime the hooks and the `te` command run |
-| [`plugin`](plugin/) | The installable plugin: manifests, hook files, launchers, slash commands, the Pi extension |
+| [`plugin`](plugin/) | The installable plugin: manifests, hook files, launchers, slash commands, the Pi extension, the OpenCode v2 plugin |
 | [`experiments`](experiments/) | The harness, launchers and task sets behind the paper's results |
 | [`docs`](docs/) | `PLUGIN.md` (design, verified agent behavior) and `ARCHITECTURE.md` (how the package fits together) |
 | [`tests`](tests/) | Offline tests for the package and the plugin |

@@ -1,12 +1,12 @@
 # TokenEconomizer plugin
 
-How to install and use TokenEconomizer in Claude Code, Codex, the GitHub Copilot CLI and Pi. What
+How to install and use TokenEconomizer in Claude Code, Codex, the GitHub Copilot CLI, Pi and OpenCode. What
 the plugin does and why is in the [main README](../README.md); its design and the verified
 behaviour of each agent are in [`docs/PLUGIN.md`](../docs/PLUGIN.md).
 
 - [Before you start](#before-you-start)
 - Install and use it on [Claude Code](#claude-code) · [Codex](#codex) ·
-  [Copilot CLI](#copilot-cli) · [Pi](#pi)
+  [Copilot CLI](#copilot-cli) · [Pi](#pi) · [OpenCode](#opencode)
 - [What to expect](#what-to-expect) · [Commands](#commands) · [Settings](#settings)
 - [Repository map](#repository-map) · [Using with rtk](#using-with-rtk) ·
   [Model calls and API keys](#model-calls-and-api-keys) · [Troubleshooting](#troubleshooting)
@@ -284,6 +284,46 @@ after the loop guard's redirect gets a notice: press **Esc** to abort it, or Ctr
 **Uninstall.** `pi remove git:github.com/microsoft/TokenEconomizer` (the source you installed
 from); `pi config` turns it off without removing it. Optional: `rm -rf ~/.tokeneconomizer`.
 
+## OpenCode
+
+**1. Install.** OpenCode v2 (`2.2.0+`) loads server plugins from `~/.config/opencode/opencode.json` (global) or `opencode.json` (per-project). You can point it either directly at the Git repository (installed and cached automatically by OpenCode's Bun package manager) or at a local clone:
+
+*Directly from Git (no manual clone needed):*
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "tokeneconomizer@git+https://github.com/SouzaGabrielC/TokenEconomizer.git#feat/opencode-v2-plugin"
+  ]
+}
+```
+
+*From a local clone:*
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "/path/to/TokenEconomizer/plugin"
+  ]
+}
+```
+
+**2. Check it.** Start OpenCode (in the TUI or through a GUI client connected to the OpenCode server, such as OpenChamber) and type `/te status` in the chat. The commands are `/te status`, `/te microskills`, `/te config …`, `/te repomap …` and `/te repos`, or from a terminal inside the repository: `~/.tokeneconomizer/bin/te --host opencode <command>` (the `~/.tokeneconomizer/bin/te` launcher is created automatically on the first session start).
+
+**3. Sub-agents and spec-driven workflows.** On OpenCode v2, TokenEconomizer operates as a server plugin (`Plugin.define({ id: "tokeneconomizer", setup(ctx) })`) and supports multi-agent workflows (such as `superpowers`) out of the box:
+
+- **Frozen context inheritance across sub-agents:** The manual built at the start of a root session (`microskills` facts + `repomap`) is injected via `ctx.session.hook("context")` (`event.system.push`) into both the root session and every spawned sub-agent session (`parentID`), keeping the prompt prefix identical across turns so provider prompt caches stay warm while preventing sub-agents from burning turns searching for files or test commands.
+- **Per-session loop guard across v2 tools:** `ctx.tool.hook("execute.after")` monitors OpenCode v2's tool vocabulary (`shell`, `read`, `edit`, `write`, `patch`, `glob`, `grep`), extracting `shell`'s exit status (`result.output.exit` / `result.metadata.exit`) so failing commands and edit loops are detected and redirected in both root sessions and sub-agents.
+- **SQLite sub-agent tree rollup:** When a root session ends (on `session.deleted`, `session.archived`, `opencode run` completion, or process exit via `hookSync`), `trace/opencode.py` reads OpenCode's SQLite database (`<XDG_DATA_HOME>/opencode/opencode.db`, tables `session_v2` and `session_message`) in read-only mode using a recursive CTE (`WITH RECURSIVE tree AS ...`) and rolls up the root session together with all descendant sub-agent sessions into a single fold and ledger entry.
+
+**4. Messages and headless runs.** In interactive sessions (TUI and OpenChamber), the plugin posts one-line notices directly into the session timeline via `ctx.session.synthetic({ resume: false })` without triggering an extra model turn; under `opencode run` (or when `synthetic` is unavailable), notices are written to stderr. Press **Esc** in the TUI to interrupt a stuck turn, or **Ctrl+C** under `opencode run`.
+
+**Update.** If installed from a local clone, run `git pull` in the clone and restart OpenCode. If installed via a `git+https://` package spec, remove OpenCode's cached package (`rm -rf ~/.cache/opencode/node_modules/tokeneconomizer ~/.cache/opencode/bun.lock*`) and restart OpenCode so Bun fetches the latest commit.
+
+**Uninstall.** Remove the `"tokeneconomizer..."` entry from `opencode.json`. Optional: `rm -rf ~/.tokeneconomizer`.
+
 ## What to expect
 
 The plugin works session by session: what it learns from a repository's earlier sessions is
@@ -364,8 +404,9 @@ How to run them:
 | Codex | `$tokeneconomizer:<command>` (`status`, `microskills`, `toolprune`, `config`, `repos`) | `~/.tokeneconomizer/bin/te --host codex <command>` |
 | Copilot CLI | `/tokeneconomizer:<command>` (interactive mode) | `~/.tokeneconomizer/bin/te --host copilot <command>` |
 | Pi | `/te <command>` | `~/.tokeneconomizer/bin/te --host pi <command>` |
+| OpenCode | `/te <command>` (TUI and OpenChamber) | `~/.tokeneconomizer/bin/te --host opencode <command>` |
 
-`doctor` and `repomap` run from a terminal (or as `/te …` on Pi); there is no slash command or
+`doctor` and `repomap` run from a terminal (or as `/te …` on Pi and OpenCode); there is no slash command or
 Codex skill for them.
 
 Inside an agent, each command is one model turn; from a terminal it costs nothing. Codex asks
@@ -389,7 +430,7 @@ and are shared by every agent working in it. The examples use Claude Code's form
 | Claude Code | `/tokeneconomizer:config set loopguard=off` |
 | Codex | `$tokeneconomizer:config set loopguard=off` |
 | Copilot CLI | `/tokeneconomizer:config set loopguard=off` (interactive mode) |
-| Pi | `/te config set loopguard=off` |
+| Pi, OpenCode | `/te config set loopguard=off` |
 | any agent, from a terminal | `~/.tokeneconomizer/bin/te config set loopguard=off` |
 
 **Turn a mechanism on or off:**
@@ -463,7 +504,7 @@ of the preset. A value you set with `loopguard.<name>` wins over both. Defaults 
 
 | Key | Default | Values |
 |---|---|---|
-| `paid_model` | `""` | model for the plugin's own calls; empty: `haiku` on Claude Code, the agent's own default model on Codex and Pi, on Copilot `COPILOT_PROVIDER_MODEL_ID` or `COPILOT_MODEL` (unless it is `auto`), else a BYOK provider's Haiku, else Copilot's own default |
+| `paid_model` | `""` | model for the plugin's own calls; empty: `haiku` on Claude Code, the agent's own default model on Codex, Pi and OpenCode, on Copilot `COPILOT_PROVIDER_MODEL_ID` or `COPILOT_MODEL` (unless it is `auto`), else a BYOK provider's Haiku, else Copilot's own default |
 | `shadow` | `false` | decide and log everything, act on nothing |
 | `mode` | `auto` | `interactive` or `headless` to override what the plugin detects |
 
@@ -494,7 +535,7 @@ pip install aider-chat                      # or: pipx install aider-chat / uv t
 ```
 
 - **What goes in.** At most `repomap_tokens` tokens (default 2048), once per session. On Claude
-  Code, the Copilot CLI and Pi it is ranked toward the identifiers in your first prompt; if that
+  Code, the Copilot CLI, Pi and OpenCode it is ranked toward the identifiers in your first prompt; if that
   takes longer than `repomap_timeout` seconds (about 5 s on a repository of Django's size, well
   under a second on a small one), the cached map is used instead. Codex gets the cached map at
   session start. `repomap=start` does that on every agent and never delays a prompt.
@@ -532,9 +573,9 @@ every `microskills_propose_every` sessions (`microskills=envfacts` keeps only th
 without a model call); `loopguard=off` turns the judge off along with the guard.
 
 These calls run through **your own agent's CLI**: `claude -p`; `codex exec`; `copilot -p`, with
-every tool removed; and `pi -p`, with nothing loaded but the model. So they use whatever your
+every tool removed; `pi -p`, with nothing loaded but the model; and `opencode run --standalone --format json`, with all tool permissions denied in a temporary directory and the temporary sidecall session deleted afterwards. So they use whatever your
 sessions already use (a Claude subscription or Anthropic API key, your Codex login or OpenAI key,
-Copilot's subscription, or the provider and login Pi is set up with), are billed there, and are
+Copilot's subscription, or the provider and login Pi or OpenCode is set up with), are billed there, and are
 shown in `status`. Copilot with BYOK is the exception; see [Copilot CLI](#copilot-cli).
 
 A call that gets no reply leaves a line in `~/.tokeneconomizer/errors.log`. If the CLI answers
@@ -553,4 +594,4 @@ and only when you run it.
 | the deny list leaves nothing out after many sessions | run `toolprune refresh-catalog` (Claude Code, Copilot) |
 | a Codex deny list was applied but nothing changed | trust the project in Codex; `~/.tokeneconomizer/bin/te --host codex doctor` says whether it is trusted |
 | errors.log has `sidecall copilot: no reply`, and a session start says the plugin's model calls are paused | they cannot use a Copilot BYOK provider ([Copilot CLI](#copilot-cli)): micro-skills keeps its facts that need no model call (`microskills=envfacts` stops trying the proposer), and the loop guard redirects only at its backstop. Once Copilot is signed in, `config set microskills=on` (or `loopguard=on`) tries again |
-| `te` shows another agent's state | add `--host claude`, `codex`, `copilot` or `pi` |
+| `te` shows another agent's state | add `--host claude`, `codex`, `copilot`, `pi` or `opencode` |
